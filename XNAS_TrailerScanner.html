@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111827"><title>X-NAS Trailer Scanner</title>
+<style>
+:root{color-scheme:dark;--bg:#111827;--panel:#1f2937;--accent:#22c55e;--text:#f9fafb;--muted:#cbd5e1}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:Arial,Helvetica,sans-serif}
+main{width:min(100%,640px);margin:0 auto;padding:16px 14px 28px}h1{font-size:23px;text-align:center;margin:8px 0 6px}.sub{text-align:center;color:var(--muted);font-size:14px;margin:0 0 16px}
+.stage{position:relative;overflow:hidden;background:#000;border-radius:14px;min-height:260px;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center}
+video{display:block;width:100%;height:100%;position:absolute;inset:0;object-fit:cover}.frame{position:absolute;left:7%;right:7%;top:34%;height:32%;border:3px solid var(--accent);border-radius:10px;box-shadow:0 0 0 999px rgba(0,0,0,.16);pointer-events:none}
+.frame:after{content:"CENTER TRAILER NUMBER HERE";position:absolute;top:-29px;left:0;right:0;text-align:center;font-size:12px;font-weight:bold;letter-spacing:.7px;color:#fff;text-shadow:0 1px 4px #000}
+.status{margin:12px 0;min-height:22px;text-align:center;font-size:14px;color:var(--muted)}.readout{background:#030712;border:1px solid #374151;border-radius:12px;padding:13px 10px;text-align:center}
+.readout small{display:block;color:var(--muted);font-size:12px;letter-spacing:1px}#detected{font-size:32px;font-weight:800;letter-spacing:2px;overflow-wrap:anywhere;min-height:40px;margin-top:5px}
+label{display:block;margin:14px 0 6px;color:var(--muted);font-size:13px}input{width:100%;padding:13px 12px;border-radius:9px;border:1px solid #4b5563;background:#fff;color:#111827;font-size:20px;text-transform:uppercase}
+.buttons{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}button{border:0;border-radius:10px;min-height:48px;padding:12px 10px;font-size:16px;font-weight:700;cursor:pointer}
+#useBtn{background:var(--accent);color:#052e16}#cancelBtn{background:#374151;color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.note{font-size:12px;color:var(--muted);line-height:1.45;margin:13px 2px 0}.error{color:#fca5a5}.hidden{display:none!important}
+</style></head>
+<body><main>
+<h1>📷 Trailer Number Scanner</h1><p class="sub">Hold the trailer number inside the green box.</p>
+<div class="stage"><video id="camera" autoplay playsinline muted></video><div class="frame"></div></div>
+<div id="status" class="status">Starting camera…</div>
+<section class="readout"><small>LIVE READING</small><div id="detected">Looking…</div></section>
+<label for="manualNumber">Correct the number if needed</label><input id="manualNumber" type="text" inputmode="text" autocomplete="off" autocapitalize="characters" placeholder="Trailer number">
+<div class="buttons"><button id="useBtn" disabled>USE NUMBER</button><button id="cancelBtn" type="button">CANCEL</button></div>
+<p class="note">Recognition can be affected by glare, darkness, dirt, or angled lettering. Confirm the number before using it. Camera access requires HTTPS and browser permission.</p>
+<canvas id="cropCanvas" class="hidden"></canvas></main>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+(() => {
+const video=document.getElementById('camera'),statusEl=document.getElementById('status'),detectedEl=document.getElementById('detected'),inputEl=document.getElementById('manualNumber'),useBtn=document.getElementById('useBtn'),cancelBtn=document.getElementById('cancelBtn'),canvas=document.getElementById('cropCanvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
+const params=new URLSearchParams(location.search),rawReturn=params.get('returnUrl')||'';let returnUrl=null;
+try{if(rawReturn){const parsed=new URL(rawReturn);if(parsed.protocol==='https:'&&(parsed.hostname==='script.google.com'||parsed.hostname==='script.googleusercontent.com'))returnUrl=parsed;}}catch(_){}
+let stream=null,worker=null,stopped=false,busy=false,lastCandidate='',sameCandidateCount=0,scanTimer=null;
+function setStatus(message,isError=false){statusEl.textContent=message;statusEl.classList.toggle('error',isError)}
+function normalize(text){return(text||'').toUpperCase().replace(/[^A-Z0-9]/g,'')}
+function candidatesFrom(text){const raw=(text||'').toUpperCase().replace(/[^A-Z0-9\s-]/g,' '),pieces=raw.split(/\s+/).map(normalize).filter(Boolean),found=[];for(const piece of pieces){if(piece.length>=5&&piece.length<=12&&/\d/.test(piece))found.push(piece)}return[...new Set(found)].sort((a,b)=>score(b)-score(a));function score(s){return(/\d{4,}/.test(s)?3:0)+(/[A-Z]/.test(s)?1:0)-Math.abs(8-s.length)*.05}}
+function acceptReading(value){const clean=normalize(value);if(!clean)return;inputEl.value=clean;detectedEl.textContent=clean;useBtn.disabled=false}
+async function startCamera(){
+if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){setStatus('This browser context does not provide camera access. Open this HTTPS scanner page directly in Safari.',true);detectedEl.textContent='Camera unavailable';return}
+try{stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});video.srcObject=stream;await video.play();setStatus('Camera ready. Center the trailer number in the green box.');startOCR()}
+catch(err){console.error('Camera start failed:',err);const name=err&&err.name?err.name:'CameraError';if(name==='NotAllowedError'||name==='SecurityError')setStatus('Camera permission was blocked. In Safari, allow Camera for this site, then reload this page.',true);else if(name==='NotFoundError'||name==='OverconstrainedError')setStatus('No usable camera was found on this device.',true);else setStatus('Could not start camera ('+name+'). Check browser permission and reload.',true);detectedEl.textContent='Camera unavailable'}}
+async function startOCR(){if(!window.Tesseract){setStatus('Text recognition library did not load. Check the internet connection and reload.',true);return}
+try{worker=await Tesseract.createWorker('eng',1,{logger:m=>{if(!stopped&&m.status==='recognizing text')setStatus('Reading trailer number… '+Math.round((m.progress||0)*100)+'%')}});await worker.setParameters({tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',preserve_interword_spaces:'0',user_defined_dpi:'180'});setStatus('Camera ready. Hold the number steady inside the green box.');scanTimer=setInterval(readFrame,900)}
+catch(err){console.error('OCR setup failed:',err);setStatus('Camera is on, but text recognition could not start. You can enter the number manually.',true)}}
+async function readFrame(){if(stopped||busy||!worker||video.readyState<2||!video.videoWidth)return;busy=true;try{const vw=video.videoWidth,vh=video.videoHeight,sx=Math.round(vw*.07),sy=Math.round(vh*.34),sw=Math.round(vw*.86),sh=Math.round(vh*.32);canvas.width=Math.min(sw*2,1800);canvas.height=Math.min(sh*2,700);ctx.drawImage(video,sx,sy,sw,sh,0,0,canvas.width,canvas.height);const result=await worker.recognize(canvas),found=candidatesFrom(result.data.text);if(found.length){const candidate=found[0];acceptReading(candidate);if(candidate===lastCandidate)sameCandidateCount++;else{lastCandidate=candidate;sameCandidateCount=1}setStatus(sameCandidateCount>=2?'Reading found. Check the number, then tap USE NUMBER.':'Possible number found. Hold steady to confirm.')}else if(!inputEl.value){detectedEl.textContent='Looking…';setStatus('No clear number yet. Adjust distance, angle, or lighting.')}}catch(err){console.warn('OCR frame failed:',err)}finally{busy=false}}
+async function stopCamera(){stopped=true;if(scanTimer)clearInterval(scanTimer);if(stream)stream.getTracks().forEach(track=>track.stop());video.srcObject=null;if(worker){try{await worker.terminate()}catch(_){}worker=null}}
+function returnToApp(number){if(!returnUrl){setStatus('No valid Yard Check return address was supplied. Copy the number and return to Yard Check manually.',true);inputEl.focus();inputEl.select();return}returnUrl.searchParams.set('scannedTrailer',number);returnUrl.searchParams.set('scanReturn','1');location.href=returnUrl.toString()}
+useBtn.addEventListener('click',async()=>{const number=normalize(inputEl.value);if(!number){setStatus('Enter or confirm a trailer number first.',true);return}useBtn.disabled=true;setStatus('Returning trailer number to Yard Check…');await stopCamera();returnToApp(number)});
+cancelBtn.addEventListener('click',async()=>{await stopCamera();if(returnUrl)location.href=returnUrl.toString();else{setStatus('Scanner stopped. You can close this tab and return to Yard Check.');cancelBtn.textContent='CAMERA STOPPED';cancelBtn.disabled=true}});
+window.addEventListener('pagehide',()=>{stopped=true;if(scanTimer)clearInterval(scanTimer);if(stream)stream.getTracks().forEach(track=>track.stop());if(worker)worker.terminate().catch(()=>{})});
+startCamera();
+})();
+</script></body></html>
